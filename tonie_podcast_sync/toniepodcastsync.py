@@ -1,6 +1,7 @@
 """The Tonie Podcast Sync API."""
 
 import logging
+import math
 import os
 import platform
 import subprocess
@@ -141,7 +142,36 @@ class ToniePodcastSync:
                 self.__reshuffle_until_different(podcast, latest_episode_tonie)
 
             cached_episodes = self.__cache_podcast_episodes(podcast, max_minutes)
-            self._upload_episodes_to_tonie(podcast, cached_episodes, tonie_id)
+            self._upload_episodes_to_tonie(podcast.title, cached_episodes, tonie_id)
+
+    def sync_files_to_tonie(
+        self,
+        files: list[str | Path] | None = None,
+        tonie_id: str = "",
+        *,
+        directory: str | Path | None = None,
+        max_minutes: int = 90,
+        wipe: bool = True,  # noqa: FBT001, FBT002
+        sort_order: str | None = None,
+        dry_run: bool = False,  # noqa: FBT001, FBT002
+    ) -> list[Episode]:
+        """Sync local MP3 files to a creative Tonie."""
+        if not self._validate_tonie_exists(tonie_id):
+            return []
+
+        local_files = self._scan_local_audio_files(files=files, directory=directory, sort_order=sort_order)
+        selected_files, skipped_files = self._select_local_audio_files_within_time_limit(local_files, max_minutes)
+        self._report_skipped_local_audio_files(skipped_files, max_minutes)
+
+        if dry_run:
+            self._print_local_audio_dry_run(selected_files, tonie_id, max_minutes)
+            return selected_files
+
+        if wipe:
+            self._wipe_tonie(tonie_id)
+
+        self._upload_episodes_to_tonie("Local audio files", selected_files, tonie_id)
+        return selected_files
 
     def _validate_tonie_exists(self, tonie_id: str) -> bool:
         """Check if a Tonie with the given ID exists.
@@ -211,14 +241,14 @@ class ToniePodcastSync:
 
     def _upload_episodes_to_tonie(
         self,
-        podcast: Podcast,
+        source_title: str,
         episodes: list[Episode],
         tonie_id: str,
     ) -> None:
         """Upload a list of episodes to a Tonie.
 
         Args:
-            podcast: The podcast object (for title information)
+            source_title: The source title for progress reporting
             episodes: List of episodes to upload
             tonie_id: The ID of the target Tonie
         """
@@ -227,7 +257,7 @@ class ToniePodcastSync:
 
         for episode in track(
             episodes,
-            description=(f"{podcast.title}: transferring {len(episodes)} episodes to {self._tonies[tonie_id].name}"),
+            description=(f"{source_title}: transferring {len(episodes)} episodes to {self._tonies[tonie_id].name}"),
             total=len(episodes),
             transient=True,
             refresh_per_second=2,
@@ -237,7 +267,7 @@ class ToniePodcastSync:
             else:
                 failed_episodes.append(episode)
 
-        self._report_upload_results(podcast.title, tonie_id, successfully_uploaded, failed_episodes)
+        self._report_upload_results(source_title, tonie_id, successfully_uploaded, failed_episodes)
 
     def _report_upload_results(
         self,
@@ -255,7 +285,7 @@ class ToniePodcastSync:
             failed_episodes: List of episodes that failed to upload
         """
         if successfully_uploaded:
-            episode_info = [f"{episode.title} ({episode.published})" for episode in successfully_uploaded]
+            episode_info = [self._format_episode_info(episode) for episode in successfully_uploaded]
             console.print(
                 f"{podcast_title}: Successfully uploaded {episode_info} to "
                 f"{self._tonies[tonie_id].name} ({self._tonies[tonie_id].id})",
@@ -563,6 +593,166 @@ class ToniePodcastSync:
                 if chunk:
                     file.write(chunk)
 
+    def _scan_local_audio_files(
+        self,
+        *,
+        files: list[str | Path] | None = None,
+        directory: str | Path | None = None,
+        sort_order: str | None = None,
+    ) -> list[Episode]:
+        """Scan local MP3 files and return them as Episode-like objects."""
+        paths = self._resolve_local_audio_paths(files=files, directory=directory)
+        scanned_files = [self._build_local_audio_episode(path) for path in paths]
+        return self._sort_local_audio_files(scanned_files, sort_order=sort_order, directory=directory)
+
+    def _resolve_local_audio_paths(
+        self,
+        *,
+        files: list[str | Path] | None = None,
+        directory: str | Path | None = None,
+    ) -> list[Path]:
+        """Resolve local MP3 file inputs into concrete paths."""
+        if (files is None and directory is None) or (files is not None and directory is not None):
+            msg = "Provide either 'files' or 'directory' when syncing local audio files."
+            raise ValueError(msg)
+
+        if directory is not None:
+            return list(sorted(Path(directory).glob("*.mp3"), key=lambda path: path.name.lower()))
+
+        return [Path(path) for path in files or []]
+
+    def _sort_local_audio_files(
+        self,
+        files: list[Episode],
+        *,
+        sort_order: str | None,
+        directory: str | Path | None,
+    ) -> list[Episode]:
+        """Sort local files using the requested or inferred ordering."""
+        effective_sort_order = sort_order or ("alphabetical" if directory is not None else "manual")
+        if effective_sort_order == "manual":
+            return files
+        if effective_sort_order == "alphabetical":
+            return sorted(files, key=lambda episode: episode.fpath.name.lower())
+
+        msg = f"Unsupported sort_order '{effective_sort_order}'. Supported values are 'manual' and 'alphabetical'."
+        raise ValueError(msg)
+
+    def _build_local_audio_episode(self, filepath: Path) -> Episode:
+        """Build an Episode-like object from a local MP3 file."""
+        title = self._extract_local_audio_title(filepath)
+        duration_sec = self._get_local_audio_duration_sec(filepath)
+        episode = Episode(
+            podcast="Local audio files",
+            raw={
+                "title": title,
+                "published": "",
+                "published_parsed": time.gmtime(0),
+                "id": str(filepath),
+                "itunes_duration": str(duration_sec),
+            },
+            url=str(filepath),
+        )
+        episode.fpath = filepath
+        return episode
+
+    def _extract_local_audio_title(self, filepath: Path) -> str:
+        """Extract a display title from ID3 metadata or fall back to the filename."""
+        try:
+            with filepath.open("rb") as file:
+                header = file.read(10)
+                if len(header) < 10 or not header.startswith(b"ID3"):
+                    return filepath.stem
+
+                version = header[3]
+                tag_size = self._decode_synchsafe_integer(header[6:10])
+                tag_data = file.read(tag_size)
+                title = self._extract_id3_text_frame(tag_data, "TIT2", version)
+                return title or filepath.stem
+        except OSError:
+            return filepath.stem
+
+    def _decode_synchsafe_integer(self, value: bytes) -> int:
+        """Decode an ID3 synchsafe integer."""
+        result = 0
+        for byte in value:
+            result = (result << 7) | (byte & 0x7F)
+        return result
+
+    def _extract_id3_text_frame(self, tag_data: bytes, frame_id: str, version: int) -> str | None:
+        """Extract an ID3 text frame from raw tag data."""
+        offset = 0
+        while offset + 10 <= len(tag_data):
+            current_frame_id = tag_data[offset : offset + 4].decode("latin1")
+            if not current_frame_id.strip("\x00"):
+                break
+
+            frame_size_bytes = tag_data[offset + 4 : offset + 8]
+            frame_size = (
+                self._decode_synchsafe_integer(frame_size_bytes) if version == 4 else int.from_bytes(frame_size_bytes, "big")
+            )
+            frame_start = offset + 10
+            frame_end = frame_start + frame_size
+            frame_data = tag_data[frame_start:frame_end]
+            if current_frame_id == frame_id:
+                return self._decode_id3_text(frame_data)
+            offset = frame_end
+        return None
+
+    def _decode_id3_text(self, frame_data: bytes) -> str:
+        """Decode an ID3 text frame payload."""
+        if not frame_data:
+            return ""
+        encoding = frame_data[0]
+        text_bytes = frame_data[1:]
+        encodings = {0: "latin1", 1: "utf-16", 2: "utf-16-be", 3: "utf-8"}
+        return text_bytes.decode(encodings.get(encoding, "latin1"), errors="ignore").rstrip("\x00").strip()
+
+    def _get_local_audio_duration_sec(self, filepath: Path) -> int:
+        """Read the duration of a local MP3 file in seconds."""
+        audio = AudioSegment.from_file(filepath, format="mp3")
+        return math.ceil(audio.duration_seconds)
+
+    def _select_local_audio_files_within_time_limit(
+        self, episodes: list[Episode], max_minutes: int
+    ) -> tuple[list[Episode], list[Episode]]:
+        """Select local files that fit within the configured time limit."""
+        if max_minutes <= 0 or max_minutes > MAXIMUM_TONIE_MINUTES:
+            max_minutes = MAXIMUM_TONIE_MINUTES
+
+        selected_files = []
+        skipped_files = []
+        total_seconds = 0
+        max_seconds = max_minutes * 60
+
+        for episode in episodes:
+            if episode.duration_sec > max_seconds or (total_seconds + episode.duration_sec) > max_seconds:
+                skipped_files.append(episode)
+                continue
+            total_seconds += episode.duration_sec
+            selected_files.append(episode)
+
+        return selected_files, skipped_files
+
+    def _report_skipped_local_audio_files(self, skipped_files: list[Episode], max_minutes: int) -> None:
+        """Print a warning for local files skipped due to the time limit."""
+        if not skipped_files:
+            return
+        skipped_titles = ", ".join(episode.title for episode in skipped_files)
+        console.print(
+            f"Warning: skipped {len(skipped_files)} local file(s) due to time limit of {max_minutes} minutes: {skipped_titles}",
+            style="yellow",
+        )
+
+    def _print_local_audio_dry_run(self, selected_files: list[Episode], tonie_id: str, max_minutes: int) -> None:
+        """Print a dry-run preview for local audio sync."""
+        console.print(
+            f"Dry run: would upload {len(selected_files)} local file(s) to {self._tonies[tonie_id].name} ({tonie_id}) "
+            f"within {max_minutes} minutes",
+        )
+        for episode in selected_files:
+            console.print(f" - {episode.title}")
+
     def _process_audio_content(self, content: bytes, volume_adjustment: int) -> bytes:
         """Process audio content, applying volume adjustment if needed.
 
@@ -597,7 +787,11 @@ class ToniePodcastSync:
         Returns:
             Formatted chapter title string
         """
-        return f"{episode.title} ({episode.published})"
+        return f"{episode.title} ({episode.published})" if episode.published else episode.title
+
+    def _format_episode_info(self, episode: Episode) -> str:
+        """Format uploaded episode info for console output."""
+        return f"{episode.title} ({episode.published})" if episode.published else episode.title
 
     def _is_tonie_empty(self, tonie_id: str) -> bool:
         """Check if a Tonie has no chapters.
