@@ -1,13 +1,15 @@
 """The command line interface module for the tonie-podcast-sync."""
 
 import warnings
+from pathlib import Path
+from typing import Annotated
 
 import tomli_w
 from dynaconf.vendor.box.exceptions import BoxError
 from rich.console import Console
 from rich.prompt import Confirm, IntPrompt, Prompt
 from tonie_api.models import CreativeTonie
-from typer import Typer
+from typer import BadParameter, Option, Typer
 
 from tonie_podcast_sync.config import APP_SETTINGS_DIR, settings
 from tonie_podcast_sync.constants import MAXIMUM_TONIE_MINUTES
@@ -22,15 +24,95 @@ _console = Console()
 
 @app.command()
 def update_tonies() -> None:
-    """Update the tonies by using the settings file."""
+    """Update configured tonies from podcasts or local audio sources defined in settings.toml."""
     tps = _create_tonie_podcast_sync()
     if not tps:
         return
 
     for tonie_id, tonie_config in settings.CREATIVE_TONIES.items():
-        podcast = _create_podcast_from_config(tonie_config)
-        wipe = tonie_config.get("wipe", default=True)
-        tps.sync_podcast_to_tonie(podcast, tonie_id, tonie_config.maximum_length, wipe=wipe)
+        _sync_tonie_from_config(tps, tonie_id, tonie_config)
+
+
+@app.command()
+def sync_local_files(  # noqa: PLR0913
+    tonie_id: Annotated[str, Option("--tonie-id", help="ID of the creative Tonie to update.")],
+    directory: Annotated[Path | None, Option("--directory", help="Folder containing .mp3 files to sync.")] = None,
+    files: Annotated[
+        list[Path] | None,
+        Option("--files", help="One or more .mp3 files to sync. Repeat the option for multiple files."),
+    ] = None,
+    maximum_length: Annotated[
+        int,
+        Option(
+            "--maximum-length",
+            min=1,
+            max=MAXIMUM_TONIE_MINUTES,
+            help="Maximum combined playback time in minutes.",
+        ),
+    ] = MAXIMUM_TONIE_MINUTES,
+    episode_sorting: Annotated[
+        str | None,
+        Option(
+            "--episode-sorting",
+            help="Local audio ordering: 'manual' keeps --files order, 'alphabetical' sorts by filename.",
+        ),
+    ] = None,
+    volume_adjustment: Annotated[
+        int,
+        Option("--volume-adjustment", help="Volume adjustment in dB for local MP3 files."),
+    ] = 0,
+    episode_min_duration_sec: Annotated[
+        int,
+        Option(
+            "--episode-min-duration-sec",
+            min=0,
+            help="Skip local files shorter than this many seconds.",
+        ),
+    ] = 0,
+    episode_max_duration_sec: Annotated[
+        int,
+        Option(
+            "--episode-max-duration-sec",
+            min=1,
+            help="Skip local files longer than this many seconds.",
+        ),
+    ] = MAXIMUM_TONIE_MINUTES * 60,
+    wipe: Annotated[
+        bool | None,
+        Option("--wipe/--no-wipe", help="Clear the Tonie before uploading new local files."),
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        Option("--dry-run", help="Preview which files would be uploaded without changing the Tonie."),
+    ] = None,
+) -> None:
+    """Sync local MP3 files directly from the CLI."""
+    tps = _create_tonie_podcast_sync()
+    if not tps:
+        return
+
+    wipe = True if wipe is None else wipe
+    dry_run = False if dry_run is None else dry_run
+
+    if directory is not None and files:
+        msg = "Provide either --directory or --files, not both."
+        raise BadParameter(msg)
+    if directory is None and not files:
+        msg = "Provide either --directory or at least one --files value."
+        raise BadParameter(msg)
+
+    tps.sync_files_to_tonie(
+        tonie_id=tonie_id,
+        directory=directory,
+        files=files,
+        max_minutes=maximum_length,
+        wipe=wipe,
+        sort_order=episode_sorting,
+        dry_run=dry_run,
+        volume_adjustment=volume_adjustment,
+        episode_min_duration_sec=episode_min_duration_sec,
+        episode_max_duration_sec=episode_max_duration_sec,
+    )
 
 
 def _create_tonie_podcast_sync() -> ToniePodcastSync | None:
@@ -49,18 +131,125 @@ def _create_tonie_podcast_sync() -> ToniePodcastSync | None:
         return None
 
 
-def _create_podcast_from_config(config: dict) -> Podcast:
+def _sync_tonie_from_config(
+    tps: ToniePodcastSync, tonie_id: str, tonie_config: object
+) -> None:
+    """Sync one configured Tonie from the settings file.
+
+    Args:
+        tps: Authenticated ToniePodcastSync instance used for the sync.
+        tonie_id: Target creative Tonie ID from the settings file.
+        tonie_config: Dynaconf-backed config section for the Tonie. Must define exactly one
+            of `podcast`, `audio_folder`, or `audio_files`. Shared options include
+            `maximum_length`, `episode_sorting`, `volume_adjustment`,
+            `episode_min_duration_sec`, `episode_max_duration_sec`, and `wipe`.
+
+    Raises:
+        ValueError: If the config mixes podcast and local audio sources, or defines none.
+    """
+    podcast_url = _get_config_value(tonie_config, "podcast")
+    audio_folder = _get_config_value(tonie_config, "audio_folder")
+    audio_files = _normalize_audio_files_setting(_get_config_value(tonie_config, "audio_files"))
+    wipe = _get_config_value(tonie_config, "wipe", default=True)
+
+    if podcast_url:
+        if audio_folder or audio_files:
+            msg = f"Tonie '{tonie_id}' must not mix podcast and local audio settings."
+            raise ValueError(msg)
+        podcast = _create_podcast_from_config(tonie_config)
+        tps.sync_podcast_to_tonie(podcast, tonie_id, tonie_config.maximum_length, wipe=wipe)
+        return
+
+    if audio_folder or audio_files:
+        sync_kwargs = {
+            "tonie_id": tonie_id,
+            "max_minutes": tonie_config.maximum_length,
+            "wipe": wipe,
+            "sort_order": _get_config_value(tonie_config, "episode_sorting"),
+            "volume_adjustment": _get_config_value(tonie_config, "volume_adjustment", 0),
+            "episode_min_duration_sec": _get_config_value(tonie_config, "episode_min_duration_sec", 0),
+            "episode_max_duration_sec": _get_config_value(
+                tonie_config,
+                "episode_max_duration_sec",
+                MAXIMUM_TONIE_MINUTES * 60,
+            ),
+        }
+        if audio_folder:
+            sync_kwargs["directory"] = Path(audio_folder)
+        if audio_files:
+            sync_kwargs["files"] = [Path(path) for path in audio_files]
+
+        tps.sync_files_to_tonie(**sync_kwargs)
+        return
+
+    msg = f"Tonie '{tonie_id}' must configure one source: podcast, audio_folder, or audio_files."
+    raise ValueError(msg)
+
+
+def _get_config_value(
+    config: object, key: str, default: object = None
+) -> object:
+    """Read a config value with `.get()` first and attribute fallback.
+
+    Args:
+        config: Dynaconf section, dict-like object, or mock providing values.
+        key: Field name to read.
+        default: Value returned when the key is missing.
+
+    Returns:
+        The configured value, or `default` when neither lookup style yields a value.
+    """
+    if hasattr(config, "get"):
+        value = config.get(key, default=default)
+        if value is not default:
+            return value
+
+    config_vars = vars(config) if hasattr(config, "__dict__") else {}
+    if key in config_vars:
+        return config_vars[key]
+
+    if isinstance(config, dict):
+        return config.get(key, default)
+
+    return default
+
+
+def _normalize_audio_files_setting(audio_files: str | list[str] | None) -> list[str]:
+    """Normalize the `audio_files` config value into a list of paths.
+
+    Args:
+        audio_files: Value from settings.toml. Valid values are `None`, a single string path,
+            or a list of string paths.
+
+    Returns:
+        A list of path strings in the configured order.
+
+    Raises:
+        ValueError: If `audio_files` is neither a string nor a list of strings.
+    """
+    if audio_files is None:
+        return []
+    if isinstance(audio_files, str):
+        return [audio_files]
+    if isinstance(audio_files, list) and all(isinstance(path, str) for path in audio_files):
+        return audio_files
+
+    msg = "'audio_files' must be a string path or a list of string paths."
+    raise ValueError(msg)
+
+
+def _create_podcast_from_config(config: object) -> Podcast:
     """Create a Podcast instance from configuration.
 
     Args:
-        config: The configuration dictionary for a Tonie
+        config: The configuration section for a Tonie.
 
     Returns:
-        Configured Podcast instance
+        Configured Podcast instance.
     """
-    excluded_title_strings = config.get("excluded_title_strings", [])
-    pinned_episode_names = config.get("pinned_episode_names", [])
-    episode_max_duration_sec = config.get("episode_max_duration_sec", MAXIMUM_TONIE_MINUTES * 60)
+    excluded_title_strings = _get_config_value(config, "excluded_title_strings", [])
+    pinned_episode_names = _get_config_value(config, "pinned_episode_names", [])
+    episode_max_duration_sec = _get_config_value(config, "episode_max_duration_sec", MAXIMUM_TONIE_MINUTES * 60)
 
     return Podcast(
         config.podcast,

@@ -84,6 +84,38 @@ maximum_length = 90
 volume_adjustment = 4  # Boost quiet podcast
 ```
 
+## Local Bedtime Folder
+
+Sync all `.mp3` files from a directory in alphabetical order:
+
+```toml
+[creative_tonies.33333333-3333-3333-3333-333333333333]
+audio_folder = "/Users/example/Audio/Bedtime"
+name = "Purple Tonie - Bedtime Folder"
+episode_sorting = "alphabetical"
+maximum_length = 45
+volume_adjustment = -2
+wipe = false
+```
+
+## Local Favorites Playlist
+
+Preserve the exact order of a manually curated file list:
+
+```toml
+[creative_tonies.44444444-4444-4444-4444-444444444444]
+audio_files = [
+  "/Users/example/Audio/intro.mp3",
+  "/Users/example/Audio/chapter-1.mp3",
+  "/Users/example/Audio/chapter-2.mp3",
+  "/Users/example/Audio/outro.mp3",
+]
+name = "Silver Tonie - Favorites"
+episode_sorting = "manual"
+maximum_length = 35
+episode_max_duration_sec = 1800
+```
+
 ## Multiple Tonies Setup
 
 Complete configuration for multiple tonies with different purposes:

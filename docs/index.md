@@ -13,16 +13,17 @@
 ## Key Features
 
 - 📻 **Podcast Syncing** - Automatically sync podcast episodes to your creative tonies
-- ⚙️ **Flexible Configuration** - Configure episode sorting, duration limits, and volume adjustments
-- 🎯 **Smart Filtering** - Filter episodes by duration, title keywords, pinning, or custom criteria
+- 🎵 **Local MP3 Syncing** - Upload local audio folders or explicit MP3 file lists to a tonie
+- ⚙️ **Flexible Configuration** - Configure source type, sorting, duration limits, wipe mode, and volume adjustments
+- 🎯 **Smart Filtering** - Filter episodes or local files by duration, title keywords, pinning, or custom criteria
 - 🖥️ **Multiple Interfaces** - Use via CLI, Python library, or Docker container
 - 📦 **Easy Setup** - Simple installation via pip with minimal configuration
 
 ## How It Works
 
-1. Configure your tonie credentials and podcast feeds
-2. Map podcasts to specific creative tonies
-3. Run the sync command to fetch and upload new episodes
+1. Configure your tonie credentials and a source for each creative Tonie (`podcast`, `audio_folder`, or `audio_files`)
+2. Map those sources to specific creative tonies
+3. Run the sync command to fetch podcast episodes or upload local MP3 files
 4. Press the tonie's ear for 3 seconds to trigger the sync on your TonieBox
 
 ## Quick Links

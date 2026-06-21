@@ -42,7 +42,7 @@ tonie-podcast-sync list-tonies
 
 ### `update-tonies`
 
-Syncs podcast episodes to your configured tonies.
+Syncs the configured source for each tonie from `settings.toml`.
 
 ```bash
 tonie-podcast-sync update-tonies
@@ -50,20 +50,37 @@ tonie-podcast-sync update-tonies
 
 This command:
 
-1. Fetches the latest episodes from your configured podcasts
-2. Applies filters (duration, title exclusions, etc.)
-3. Sorts episodes according to your settings
-4. Uploads episodes to your tonies (respecting duration limits)
+1. Reads each tonie's configured source (`podcast`, `audio_folder`, or `audio_files`)
+2. Applies filters and duration limits
+3. Sorts podcast episodes or local MP3 files according to your settings
+4. Uploads the selected content to your tonies
 
-**Options:**
+### `sync-local-files`
+
+Uploads local MP3 files directly without editing `settings.toml` first.
 
 ```bash
-# Dry run - show what would be synced without actually syncing
-tonie-podcast-sync update-tonies --dry-run
-
-# Verbose output
-tonie-podcast-sync update-tonies --verbose
+tonie-podcast-sync sync-local-files \
+  --tonie-id <your-tonie-id> \
+  --directory ./audio \
+  --maximum-length 45 \
+  --episode-sorting alphabetical
 ```
+
+You can also provide explicit files and preserve their order:
+
+```bash
+tonie-podcast-sync sync-local-files \
+  --tonie-id <your-tonie-id> \
+  --files ./intro.mp3 \
+  --files ./story.mp3 \
+  --files ./outro.mp3 \
+  --episode-sorting manual \
+  --no-wipe
+```
+
+Run `tonie-podcast-sync sync-local-files --help` to see all available options, including
+`--volume-adjustment`, `--episode-min-duration-sec`, `--episode-max-duration-sec`, and `--dry-run`.
 
 ### `--help`
 

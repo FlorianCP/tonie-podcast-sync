@@ -29,7 +29,6 @@ You then have two options of using this: via its CLI or as a python library.
 
 The most convienent way is to just use the CLI:
 
-
 A first step is to configure `tonie-podcast-sync`
 
 ```bash
@@ -43,15 +42,26 @@ Afterwards, you can run
 ```bash
 tonie-podcast-sync list-tonies
 ```
+
 to get an overview about your tonies, and
 
 ```bash
 tonie-podcast-sync update-tonies
 ```
 
-to fetch new podcast episodes and download them onto the tonies and
+to fetch new podcast episodes or local MP3 files from your settings file and download them onto the tonies.
 
-If you want to perform changes (e.g. switch to another podcast), you can edit the settings file `~/.toniepodcastsync/settings.toml` in a text editor.
+For one-off local audio uploads, you can also call the dedicated CLI command directly:
+
+```bash
+tonie-podcast-sync sync-local-files \
+  --tonie-id <your-tonie-id> \
+  --directory ./my-mp3-folder \
+  --maximum-length 60 \
+  --episode-sorting alphabetical
+```
+
+If you want to perform changes (e.g. switch to another podcast or configure local MP3s), you can edit the settings file `~/.toniepodcastsync/settings.toml` in a text editor.
 
 ### CLI Settings File Format
 
@@ -59,25 +69,49 @@ The settings file supports the following options for each creative tonie:
 
 ```toml
 [creative_tonies.<tonie-id>]
-podcast = "https://example.com/podcast.xml"
 name = "My Tonie Name"
-episode_sorting = "by_date_newest_first"  # or "by_date_oldest_first", "random"
+podcast = "https://example.com/podcast.xml"  # exactly one of podcast, audio_folder, or audio_files
+episode_sorting = "by_date_newest_first"  # podcasts: by_date_newest_first|by_date_oldest_first|random
 maximum_length = 90  # Maximum duration in minutes
-episode_min_duration_sec = 0  # Minimum episode duration in seconds (optional, defaults to 0)
-episode_max_duration_sec = 5400  # Maximum total duration of epsiodes on this tonie in seconds (optional, defaults to what the tonie can store at maximum)
+episode_min_duration_sec = 0  # Minimum individual episode/file duration in seconds (optional, defaults to 0)
+episode_max_duration_sec = 5400  # Maximum individual episode/file duration in seconds (optional)
 volume_adjustment = 0  # volume adjustment in dB (+/-)
-excluded_title_strings = ["vampir", "brokkoli"]  # filter out scary episodes
-pinned_episode_names = ["the golden goose", "hans in luck"] # pin certain episodes to be always uploaded
+excluded_title_strings = ["vampir", "brokkoli"]  # podcast-only: filter out scary episodes
+pinned_episode_names = ["the golden goose", "hans in luck"] # podcast-only: always upload these first
 wipe = true  # Whether to clear existing content before syncing (optional, defaults to true)
 ```
 
-The `excluded_title_strings` field is optional and allows you to filter out episodes whose titles contain any of the specified strings (case-insensitive matching).
+```toml
+[creative_tonies.<tonie-id>]
+name = "Local Audio Tonie"
+audio_folder = "/Users/example/Audio/Bedtime"  # exactly one of podcast, audio_folder, or audio_files
+episode_sorting = "alphabetical"  # local audio: alphabetical|manual
+maximum_length = 45
+volume_adjustment = -2
+wipe = false
+```
 
-The `pinned_episode_names` field is optional and allows you to pin (i.e. always upload) episodes whose titles contain any of the specified episode names (case-insensitive matching).
+```toml
+[creative_tonies.<tonie-id>]
+name = "Favorites Tonie"
+audio_files = [
+  "/Users/example/Audio/intro.mp3",
+  "/Users/example/Audio/story.mp3",
+  "/Users/example/Audio/outro.mp3",
+]
+episode_sorting = "manual"  # preserves list order
+maximum_length = 30
+```
 
-The `episode_max_duration_sec` field is optional. It filters out individual episodes that exceed this duration. Note that this is different from `maximum_length`, which controls the total duration of episodes placed on the tonie.
+For each creative tonie, configure exactly one source: `podcast`, `audio_folder`, or `audio_files`.
 
-The `wipe` field is optional and controls whether existing content on the tonie should be cleared before syncing new episodes. If set to `true` (the default), all existing content will be removed before adding new episodes. If set to `false`, new episodes will be appended to existing content.
+The `excluded_title_strings` field is optional and allows you to filter out podcast episodes whose titles contain any of the specified strings (case-insensitive matching).
+
+The `pinned_episode_names` field is optional and allows you to pin (i.e. always upload) podcast episodes whose titles contain any of the specified episode names (case-insensitive matching).
+
+The `episode_max_duration_sec` field is optional. It filters out individual podcast episodes or local files that exceed this duration. Note that this is different from `maximum_length`, which controls the total duration of content placed on the tonie.
+
+The `wipe` field is optional and controls whether existing content on the tonie should be cleared before syncing new episodes or files. If set to `true` (the default), all existing content will be removed before adding new content. If set to `false`, new episodes or files will be appended to existing content.
 
 To periodically fetch for new episodes, you can schedule `tonie-podcast-sync` e.g. via systemd (on a Linux OS).
 
@@ -85,6 +119,7 @@ In addition,
 
 ```bash
 tonie-podcast-sync --help
+tonie-podcast-sync sync-local-files --help
 ```
 
 provides an overview about these and other available commands.

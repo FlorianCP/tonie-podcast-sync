@@ -52,6 +52,9 @@ console = Console(soft_wrap=_get_soft_wrap_setting())
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
+ID3_HEADER_SIZE = 10
+ID3_V24 = 4
+
 
 class ToniePodcastSync:
     """The class of syncing podcasts to given tonies."""
@@ -144,22 +147,58 @@ class ToniePodcastSync:
             cached_episodes = self.__cache_podcast_episodes(podcast, max_minutes)
             self._upload_episodes_to_tonie(podcast.title, cached_episodes, tonie_id)
 
-    def sync_files_to_tonie(
+    def sync_files_to_tonie(  # noqa: PLR0913
         self,
         files: list[str | Path] | None = None,
         tonie_id: str = "",
         *,
         directory: str | Path | None = None,
         max_minutes: int = 90,
-        wipe: bool = True,  # noqa: FBT001, FBT002
+        wipe: bool = True,
         sort_order: str | None = None,
-        dry_run: bool = False,  # noqa: FBT001, FBT002
+        dry_run: bool = False,
+        volume_adjustment: int = 0,
+        episode_min_duration_sec: int = 0,
+        episode_max_duration_sec: int = MAXIMUM_TONIE_MINUTES * 60,
     ) -> list[Episode]:
-        """Sync local MP3 files to a creative Tonie."""
+        """Sync local MP3 files to a creative Tonie.
+
+        Args:
+            files: Explicit list of local MP3 paths. Valid values are `None` or a list of
+                path-like values. When provided, file order is preserved unless `sort_order`
+                overrides it.
+            tonie_id: ID of the creative Tonie that should receive the files.
+            directory: Folder containing local `.mp3` files. Use this instead of `files`.
+                Valid values are `None` or a path-like value.
+            max_minutes: Maximum combined playback time to upload. Values <= 0 or above
+                `MAXIMUM_TONIE_MINUTES` fall back to `MAXIMUM_TONIE_MINUTES`.
+            wipe: If `True`, remove existing Tonie chapters before uploading. If `False`,
+                append to the existing content.
+            sort_order: Ordering for local files. Valid values are `None`, `manual`, or
+                `alphabetical`. `None` defaults to `manual` for `files` and `alphabetical`
+                for `directory`.
+            dry_run: If `True`, print the selected files without uploading anything.
+            volume_adjustment: Volume adjustment in dB applied to local MP3 files before
+                upload. `0` keeps the original volume.
+            episode_min_duration_sec: Skip local files shorter than this duration in seconds.
+                Must be >= 0.
+            episode_max_duration_sec: Skip local files longer than this duration in seconds.
+                Values <= 0 fall back to `MAXIMUM_TONIE_MINUTES * 60`.
+
+        Returns:
+            The list of local audio episodes selected for upload (or previewed during dry run).
+        """
         if not self._validate_tonie_exists(tonie_id):
             return []
 
-        local_files = self._scan_local_audio_files(files=files, directory=directory, sort_order=sort_order)
+        local_files = self._scan_local_audio_files(
+            files=files,
+            directory=directory,
+            sort_order=sort_order,
+            volume_adjustment=volume_adjustment,
+            min_duration_sec=episode_min_duration_sec,
+            max_duration_sec=episode_max_duration_sec,
+        )
         selected_files, skipped_files = self._select_local_audio_files_within_time_limit(local_files, max_minutes)
         self._report_skipped_local_audio_files(skipped_files, max_minutes)
 
@@ -170,8 +209,9 @@ class ToniePodcastSync:
         if wipe:
             self._wipe_tonie(tonie_id)
 
-        self._upload_episodes_to_tonie("Local audio files", selected_files, tonie_id)
-        return selected_files
+        prepared_files = self._prepare_local_audio_files_for_upload(selected_files)
+        self._upload_episodes_to_tonie("Local audio files", prepared_files, tonie_id)
+        return prepared_files
 
     def _validate_tonie_exists(self, tonie_id: str) -> bool:
         """Check if a Tonie with the given ID exists.
@@ -593,17 +633,47 @@ class ToniePodcastSync:
                 if chunk:
                     file.write(chunk)
 
-    def _scan_local_audio_files(
+    def _scan_local_audio_files(  # noqa: PLR0913
         self,
         *,
         files: list[str | Path] | None = None,
         directory: str | Path | None = None,
         sort_order: str | None = None,
+        volume_adjustment: int = 0,
+        min_duration_sec: int = 0,
+        max_duration_sec: int = MAXIMUM_TONIE_MINUTES * 60,
     ) -> list[Episode]:
-        """Scan local MP3 files and return them as Episode-like objects."""
+        """Scan local MP3 files and return them as Episode-like objects.
+
+        Args:
+            files: Explicit list of local MP3 paths. Valid values are `None` or a list of
+                path-like values.
+            directory: Folder containing local `.mp3` files. Valid values are `None` or a
+                path-like value.
+            sort_order: Ordering for the scanned files. Valid values are `None`, `manual`,
+                or `alphabetical`.
+            volume_adjustment: Volume adjustment in dB stored on each Episode for later upload
+                preparation. `0` keeps the original audio unchanged.
+            min_duration_sec: Skip files shorter than this many seconds. Must be >= 0.
+            max_duration_sec: Skip files longer than this many seconds. Values <= 0 fall back
+                to `MAXIMUM_TONIE_MINUTES * 60`.
+
+        Returns:
+            A sorted list of local audio files represented as Episode objects.
+        """
         paths = self._resolve_local_audio_paths(files=files, directory=directory)
-        scanned_files = [self._build_local_audio_episode(path) for path in paths]
-        return self._sort_local_audio_files(scanned_files, sort_order=sort_order, directory=directory)
+        if volume_adjustment == 0:
+            scanned_files = [self._build_local_audio_episode(path) for path in paths]
+        else:
+            scanned_files = [
+                self._build_local_audio_episode(path, volume_adjustment=volume_adjustment) for path in paths
+            ]
+        filtered_files = self._filter_local_audio_files_by_duration(
+            scanned_files,
+            min_duration_sec=min_duration_sec,
+            max_duration_sec=max_duration_sec,
+        )
+        return self._sort_local_audio_files(filtered_files, sort_order=sort_order, directory=directory)
 
     def _resolve_local_audio_paths(
         self,
@@ -611,13 +681,26 @@ class ToniePodcastSync:
         files: list[str | Path] | None = None,
         directory: str | Path | None = None,
     ) -> list[Path]:
-        """Resolve local MP3 file inputs into concrete paths."""
+        """Resolve local MP3 file inputs into concrete paths.
+
+        Args:
+            files: Explicit list of MP3 file paths. Valid values are `None` or a list of
+                path-like values.
+            directory: Folder containing `.mp3` files. Valid values are `None` or a path-like
+                value.
+
+        Returns:
+            A list of resolved `Path` objects.
+
+        Raises:
+            ValueError: If neither or both of `files` and `directory` are provided.
+        """
         if (files is None and directory is None) or (files is not None and directory is not None):
             msg = "Provide either 'files' or 'directory' when syncing local audio files."
             raise ValueError(msg)
 
         if directory is not None:
-            return list(sorted(Path(directory).glob("*.mp3"), key=lambda path: path.name.lower()))
+            return sorted(Path(directory).glob("*.mp3"), key=lambda path: path.name.lower())
 
         return [Path(path) for path in files or []]
 
@@ -628,7 +711,21 @@ class ToniePodcastSync:
         sort_order: str | None,
         directory: str | Path | None,
     ) -> list[Episode]:
-        """Sort local files using the requested or inferred ordering."""
+        """Sort local files using the requested or inferred ordering.
+
+        Args:
+            files: Local audio episodes to sort.
+            sort_order: Explicit ordering override. Valid values are `None`, `manual`, or
+                `alphabetical`.
+            directory: Original directory input. When set and `sort_order` is `None`, the
+                default order becomes `alphabetical`.
+
+        Returns:
+            The sorted list of Episode objects.
+
+        Raises:
+            ValueError: If `sort_order` is not one of the supported values.
+        """
         effective_sort_order = sort_order or ("alphabetical" if directory is not None else "manual")
         if effective_sort_order == "manual":
             return files
@@ -638,8 +735,17 @@ class ToniePodcastSync:
         msg = f"Unsupported sort_order '{effective_sort_order}'. Supported values are 'manual' and 'alphabetical'."
         raise ValueError(msg)
 
-    def _build_local_audio_episode(self, filepath: Path) -> Episode:
-        """Build an Episode-like object from a local MP3 file."""
+    def _build_local_audio_episode(self, filepath: Path, *, volume_adjustment: int = 0) -> Episode:
+        """Build an Episode-like object from a local MP3 file.
+
+        Args:
+            filepath: Path to the local `.mp3` file.
+            volume_adjustment: Volume adjustment in dB that should be applied before upload.
+                `0` keeps the original audio unchanged.
+
+        Returns:
+            An Episode object representing the local audio file.
+        """
         title = self._extract_local_audio_title(filepath)
         duration_sec = self._get_local_audio_duration_sec(filepath)
         episode = Episode(
@@ -652,16 +758,55 @@ class ToniePodcastSync:
                 "itunes_duration": str(duration_sec),
             },
             url=str(filepath),
+            volume_adjustment=volume_adjustment,
         )
         episode.fpath = filepath
         return episode
 
+    def _filter_local_audio_files_by_duration(
+        self,
+        episodes: list[Episode],
+        *,
+        min_duration_sec: int = 0,
+        max_duration_sec: int = MAXIMUM_TONIE_MINUTES * 60,
+    ) -> list[Episode]:
+        """Filter local audio files by individual duration.
+
+        Args:
+            episodes: Local audio episodes to inspect.
+            min_duration_sec: Skip files shorter than this many seconds. Must be >= 0.
+            max_duration_sec: Skip files longer than this many seconds. Values <= 0 fall back
+                to `MAXIMUM_TONIE_MINUTES * 60`.
+
+        Returns:
+            The subset of episodes that passes the duration checks.
+        """
+        effective_min_duration = max(min_duration_sec, 0)
+        effective_max_duration = max_duration_sec if max_duration_sec > 0 else MAXIMUM_TONIE_MINUTES * 60
+        filtered_episodes = []
+
+        for episode in episodes:
+            if episode.duration_sec < effective_min_duration:
+                continue
+            if episode.duration_sec > effective_max_duration:
+                continue
+            filtered_episodes.append(episode)
+
+        return filtered_episodes
+
     def _extract_local_audio_title(self, filepath: Path) -> str:
-        """Extract a display title from ID3 metadata or fall back to the filename."""
+        """Extract a display title from ID3 metadata or fall back to the filename.
+
+        Args:
+            filepath: Path to the local `.mp3` file.
+
+        Returns:
+            The `TIT2` ID3 title when available, otherwise the filename stem.
+        """
         try:
             with filepath.open("rb") as file:
-                header = file.read(10)
-                if len(header) < 10 or not header.startswith(b"ID3"):
+                header = file.read(ID3_HEADER_SIZE)
+                if len(header) < ID3_HEADER_SIZE or not header.startswith(b"ID3"):
                     return filepath.stem
 
                 version = header[3]
@@ -673,14 +818,30 @@ class ToniePodcastSync:
             return filepath.stem
 
     def _decode_synchsafe_integer(self, value: bytes) -> int:
-        """Decode an ID3 synchsafe integer."""
+        """Decode an ID3 synchsafe integer.
+
+        Args:
+            value: Four-byte synchsafe integer payload from an ID3 header or frame.
+
+        Returns:
+            The decoded integer value.
+        """
         result = 0
         for byte in value:
             result = (result << 7) | (byte & 0x7F)
         return result
 
     def _extract_id3_text_frame(self, tag_data: bytes, frame_id: str, version: int) -> str | None:
-        """Extract an ID3 text frame from raw tag data."""
+        """Extract an ID3 text frame from raw tag data.
+
+        Args:
+            tag_data: Raw bytes from the ID3 tag body.
+            frame_id: Four-character frame identifier, e.g. `TIT2`.
+            version: Major ID3 version number. `4` uses synchsafe frame sizes.
+
+        Returns:
+            The decoded frame text, or `None` when the frame is not present.
+        """
         offset = 0
         while offset + 10 <= len(tag_data):
             current_frame_id = tag_data[offset : offset + 4].decode("latin1")
@@ -689,7 +850,9 @@ class ToniePodcastSync:
 
             frame_size_bytes = tag_data[offset + 4 : offset + 8]
             frame_size = (
-                self._decode_synchsafe_integer(frame_size_bytes) if version == 4 else int.from_bytes(frame_size_bytes, "big")
+                self._decode_synchsafe_integer(frame_size_bytes)
+                if version == ID3_V24
+                else int.from_bytes(frame_size_bytes, "big")
             )
             frame_start = offset + 10
             frame_end = frame_start + frame_size
@@ -700,7 +863,14 @@ class ToniePodcastSync:
         return None
 
     def _decode_id3_text(self, frame_data: bytes) -> str:
-        """Decode an ID3 text frame payload."""
+        """Decode an ID3 text frame payload.
+
+        Args:
+            frame_data: Raw frame payload, including the one-byte ID3 text encoding marker.
+
+        Returns:
+            The decoded text content, or an empty string if the frame has no payload.
+        """
         if not frame_data:
             return ""
         encoding = frame_data[0]
@@ -709,14 +879,78 @@ class ToniePodcastSync:
         return text_bytes.decode(encodings.get(encoding, "latin1"), errors="ignore").rstrip("\x00").strip()
 
     def _get_local_audio_duration_sec(self, filepath: Path) -> int:
-        """Read the duration of a local MP3 file in seconds."""
+        """Read the duration of a local MP3 file in seconds.
+
+        Args:
+            filepath: Path to the local `.mp3` file.
+
+        Returns:
+            Rounded-up playback duration in seconds.
+        """
         audio = AudioSegment.from_file(filepath, format="mp3")
         return math.ceil(audio.duration_seconds)
+
+    def _prepare_local_audio_files_for_upload(self, episodes: list[Episode]) -> list[Episode]:
+        """Prepare local audio files for upload, including optional volume adjustment.
+
+        Args:
+            episodes: Local audio episodes selected for upload.
+
+        Returns:
+            Episode objects whose `fpath` values point at upload-ready MP3 files. Files are
+            reused as-is when `volume_adjustment` is `0`, otherwise temporary adjusted copies
+            are created.
+        """
+        prepared_episodes = []
+        for episode in episodes:
+            volume_adjustment = getattr(episode, "volume_adjustment", 0)
+            if not isinstance(volume_adjustment, int) or volume_adjustment == 0:
+                prepared_episodes.append(episode)
+                continue
+
+            adjusted_episode = Episode(
+                podcast=episode.podcast,
+                raw=episode.raw,
+                url=episode.url,
+                volume_adjustment=volume_adjustment,
+            )
+            adjusted_episode.fpath = self._create_adjusted_local_audio_copy(episode)
+            prepared_episodes.append(adjusted_episode)
+
+        return prepared_episodes
+
+    def _create_adjusted_local_audio_copy(self, episode: Episode) -> Path:
+        """Create a temporary MP3 file with the requested volume adjustment.
+
+        Args:
+            episode: Local audio episode whose source file should be adjusted.
+
+        Returns:
+            Path to a temporary `.mp3` file ready for upload.
+        """
+        with episode.fpath.open("rb") as file:
+            adjusted_content = self._process_audio_content(file.read(), episode.volume_adjustment)
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="tonie-local-audio-"))
+        adjusted_path = tmpdir / sanitize_filename(episode.fpath.name)
+        with adjusted_path.open("wb") as file:
+            file.write(adjusted_content)
+        return adjusted_path
 
     def _select_local_audio_files_within_time_limit(
         self, episodes: list[Episode], max_minutes: int
     ) -> tuple[list[Episode], list[Episode]]:
-        """Select local files that fit within the configured time limit."""
+        """Select local files that fit within the configured time limit.
+
+        Args:
+            episodes: Candidate local audio episodes in their final upload order.
+            max_minutes: Maximum combined playback time in minutes. Values <= 0 or above
+                `MAXIMUM_TONIE_MINUTES` fall back to `MAXIMUM_TONIE_MINUTES`.
+
+        Returns:
+            A tuple of `(selected_files, skipped_files)` where the first list fits within the
+            time limit and the second contains files excluded because they would exceed it.
+        """
         if max_minutes <= 0 or max_minutes > MAXIMUM_TONIE_MINUTES:
             max_minutes = MAXIMUM_TONIE_MINUTES
 
@@ -735,17 +969,30 @@ class ToniePodcastSync:
         return selected_files, skipped_files
 
     def _report_skipped_local_audio_files(self, skipped_files: list[Episode], max_minutes: int) -> None:
-        """Print a warning for local files skipped due to the time limit."""
+        """Print a warning for local files skipped due to the time limit.
+
+        Args:
+            skipped_files: Local audio episodes omitted because they exceeded the remaining
+                time budget.
+            max_minutes: Maximum combined playback time in minutes that was enforced.
+        """
         if not skipped_files:
             return
         skipped_titles = ", ".join(episode.title for episode in skipped_files)
         console.print(
-            f"Warning: skipped {len(skipped_files)} local file(s) due to time limit of {max_minutes} minutes: {skipped_titles}",
+            f"Warning: skipped {len(skipped_files)} local file(s) due to time limit of "
+            f"{max_minutes} minutes: {skipped_titles}",
             style="yellow",
         )
 
     def _print_local_audio_dry_run(self, selected_files: list[Episode], tonie_id: str, max_minutes: int) -> None:
-        """Print a dry-run preview for local audio sync."""
+        """Print a dry-run preview for local audio sync.
+
+        Args:
+            selected_files: Local audio episodes that would be uploaded.
+            tonie_id: Target creative Tonie ID used for the preview message.
+            max_minutes: Maximum combined playback time in minutes applied during selection.
+        """
         console.print(
             f"Dry run: would upload {len(selected_files)} local file(s) to {self._tonies[tonie_id].name} ({tonie_id}) "
             f"within {max_minutes} minutes",

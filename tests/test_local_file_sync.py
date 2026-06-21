@@ -124,7 +124,9 @@ def test_sync_files_allows_sort_override_for_explicit_file_list(mock_tonie_api_w
     assert upload_titles == ["A", "B"]
 
 
-def test_extract_local_audio_title_prefers_id3_title_and_falls_back_to_filename(mock_tonie_api_with_tonie, tmp_path):
+def test_extract_local_audio_title_prefers_id3_title_and_falls_back_to_filename(
+    mock_tonie_api_with_tonie, tmp_path
+):
     titled_file = tmp_path / "fallback-name.mp3"
     titled_file.write_bytes(
         b"ID3\x03\x00\x00\x00\x00\x00\x17"
@@ -135,6 +137,7 @@ def test_extract_local_audio_title_prefers_id3_title_and_falls_back_to_filename(
     untitled_file = _write_fake_mp3(tmp_path / "plain-filename.mp3")
 
     tps = ToniePodcastSync("user", "pass")
+    assert mock_tonie_api_with_tonie is not None
 
     assert tps._extract_local_audio_title(titled_file) == "Tagged Title"
     assert tps._extract_local_audio_title(untitled_file) == "plain-filename"

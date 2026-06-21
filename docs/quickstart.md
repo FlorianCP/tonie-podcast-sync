@@ -19,6 +19,9 @@ The wizard will guide you through:
 !!! info "Configuration Location"
     Settings and optional secret files are stored in `~/.toniepodcastsync`
 
+!!! tip "Local MP3 Sources"
+    The wizard currently creates podcast-based entries. To use local MP3 files, edit `~/.toniepodcastsync/settings.toml` afterwards and replace `podcast` with either `audio_folder` or `audio_files`.
+
 ## Step 2: List Your Tonies
 
 View an overview of your creative tonies:

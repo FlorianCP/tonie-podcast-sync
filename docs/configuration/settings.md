@@ -11,20 +11,19 @@ The settings file (`~/.toniepodcastsync/settings.toml`) uses TOML format and all
 
 ```toml
 [creative_tonies.<tonie-id>]
-podcast = "https://example.com/podcast.xml"
 name = "My Tonie Name"
+podcast = "https://example.com/podcast.xml"
 ```
+
+Each creative tonie must define exactly one source:
+
+- `podcast` for RSS-based syncing
+- `audio_folder` for all `.mp3` files in one directory
+- `audio_files` for an explicit ordered list of `.mp3` files
 
 ## Configuration Options
 
 ### Required Fields
-
-#### `podcast`
-The RSS feed URL of the podcast.
-
-```toml
-podcast = "https://feeds.br.de/pumuckl/feed.xml"
-```
 
 #### `name`
 A friendly name for your tonie (for reference only).
@@ -33,18 +32,52 @@ A friendly name for your tonie (for reference only).
 name = "Pumuckl Tonie"
 ```
 
+#### `podcast`
+The RSS feed URL of the podcast.
+
+```toml
+podcast = "https://feeds.br.de/pumuckl/feed.xml"
+```
+
+#### `audio_folder`
+Path to a folder whose `.mp3` files should be synced to the tonie.
+
+```toml
+audio_folder = "/Users/example/Audio/Bedtime"
+```
+
+By default, files from a folder are sorted alphabetically by filename.
+
+#### `audio_files`
+Explicit list of local `.mp3` files to sync.
+
+```toml
+audio_files = [
+  "/Users/example/Audio/intro.mp3",
+  "/Users/example/Audio/story.mp3",
+  "/Users/example/Audio/outro.mp3",
+]
+```
+
+Use `audio_files` when you want to preserve a manual order.
+
 ### Optional Fields
 
 #### `episode_sorting`
-Controls the order in which episodes are placed on the tonie.
+Controls the order in which content is placed on the tonie.
 
-**Options:**
+**Podcast options:**
 - `by_date_newest_first` (default) - Newest episodes first
 - `by_date_oldest_first` - Oldest episodes first
 - `random` - Random order
 
+**Local audio options:**
+- `alphabetical` - Sort `.mp3` files by filename
+- `manual` - Keep the order from `audio_files`
+
 ```toml
 episode_sorting = "by_date_newest_first"
+episode_sorting = "alphabetical"
 ```
 
 #### `maximum_length`
@@ -127,18 +160,21 @@ episode_sorting = "by_date_newest_first"
 maximum_length = 90
 
 [creative_tonies.87654321-4321-4321-4321-cba987654321]
-podcast = "https://kinder.wdr.de/radio/diemaus/audio/gute-nacht-mit-der-maus/diemaus-gute-nacht-104.podcast"
+audio_folder = "/Users/example/Audio/Bedtime"
 name = "Orange Tonie - Maus Bedtime"
-episode_sorting = "random"
+episode_sorting = "alphabetical"
 maximum_length = 60
 volume_adjustment = -2
-excluded_title_strings = ["vampir", "grusel"]
-pinned_episode_names = ["die maus", "sterntaler"]
+wipe = false
 
 [creative_tonies.abcdef01-abcd-abcd-abcd-0123456789ef]
-podcast = "https://feeds.br.de/checkpod-der-podcast-mit-checker-tobi/feed.xml"
-name = "Blue Tonie - Checker Tobi"
-episode_sorting = "random"
+audio_files = [
+  "/Users/example/Audio/intro.mp3",
+  "/Users/example/Audio/story.mp3",
+  "/Users/example/Audio/outro.mp3",
+]
+name = "Blue Tonie - Favorites"
+episode_sorting = "manual"
 maximum_length = 45
 episode_min_duration_sec = 30
 episode_max_duration_sec = 3600
@@ -183,13 +219,17 @@ The IDs are displayed in the format: `12345678-1234-1234-1234-123456789abc`
 
 ## Validation
 
-After editing the settings file, validate it by running:
+After editing the settings file, validate it by running one of these commands:
 
 ```bash
-tonie-podcast-sync update-tonies --dry-run
+# Validate the general configuration by syncing from settings.toml
+tonie-podcast-sync update-tonies
+
+# Preview a direct local audio sync without changing a tonie
+tonie-podcast-sync sync-local-files --tonie-id <your-tonie-id> --directory ./audio --dry-run
 ```
 
-This shows what would be synced without actually performing the sync.
+The dry run shows what would be uploaded without actually performing the sync.
 
 ## Tips
 

@@ -148,6 +148,38 @@ tps.sync_podcast_to_tonie(podcast1, greyTonie, 30)
 tps.sync_podcast_to_tonie(podcast2, greyTonie, 30, wipe=False)
 ```
 
+## Local MP3 Syncing
+
+Sync local `.mp3` files from either a folder or an explicit list:
+
+```python
+from pathlib import Path
+
+# Upload all MP3 files from a folder, sorted alphabetically
+tps.sync_files_to_tonie(
+    tonie_id=orangeTonie,
+    directory=Path("./audio/bedtime"),
+    max_minutes=45,
+    sort_order="alphabetical",
+)
+
+# Upload an explicit file list and preserve its order
+tps.sync_files_to_tonie(
+    files=[
+        Path("./audio/intro.mp3"),
+        Path("./audio/story.mp3"),
+        Path("./audio/outro.mp3"),
+    ],
+    tonie_id=greyTonie,
+    max_minutes=30,
+    sort_order="manual",
+    wipe=False,
+    volume_adjustment=-2,
+)
+```
+
+Local MP3 syncing also supports `episode_min_duration_sec`, `episode_max_duration_sec`, and `dry_run=True`.
+
 ## Complete Example
 
 ```python
@@ -215,6 +247,7 @@ Main class for interacting with TonieCloud.
 
 - `print_tonies_overview()` - Print all creative tonies with their IDs
 - `sync_podcast_to_tonie(podcast, tonie_id, maximum_length=90, wipe=True)` - Sync a podcast to a tonie
+- `sync_files_to_tonie(files=None, tonie_id="", directory=None, max_minutes=90, wipe=True, sort_order=None, volume_adjustment=0, episode_min_duration_sec=0, episode_max_duration_sec=5400, dry_run=False)` - Sync local MP3 files to a tonie
 
 ### Podcast
 
