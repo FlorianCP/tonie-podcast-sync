@@ -1,6 +1,6 @@
 [project]
 name = "tonie-podcast-sync"
-version = "3.4.0"
+version = "3.4.1"
 description = "allows synching podcast episodes to creative tonies"
 authors = [{ name = "Alexander Hartmann", email = "16985220+alexhartm@users.noreply.github.com" }]
 license = "MIT"
@@ -8,6 +8,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 keywords = ["toniebox", "podcast"]
 dependencies = [
+    "certifi>=2026.10.19",
     "feedparser>=6.0.10",
     "tonie-api>=0.1.1",
     "rich>=13.5.2",
@@ -29,6 +30,7 @@ dev = [
     "pytest-mock>=3.11.1",
     "ruff>=0.1.13",
     "pre-commit>=3.6.0",
+    "virtualenv>=21.14.12",
     "responses>=0.23.3",
 ]
 docs = [

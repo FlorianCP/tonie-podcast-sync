@@ -38,7 +38,8 @@ Feature requests are welcome! Please [open an issue](https://github.com/alexhart
 
 4. **Install development dependencies**
    ```bash
-   pip install -e ".[dev]"
+    mise install python uv
+    mise run install
    ```
 
 5. **Make your changes**
@@ -48,8 +49,8 @@ Feature requests are welcome! Please [open an issue](https://github.com/alexhart
 
 6. **Run tests and linting**
    ```bash
-   pytest
-   ruff check .
+    mise run test
+    mise run lint
    ```
 
 7. **Commit your changes**
@@ -69,7 +70,7 @@ Feature requests are welcome! Please [open an issue](https://github.com/alexhart
 
 ### Prerequisites
 
-- Python >= 3.10.11
+- [mise](https://mise.jdx.dev/) to install the Python and uv versions declared in `mise.toml`
 - ffmpeg (for testing volume adjustment features)
 
 ### Install Development Environment
@@ -79,24 +80,32 @@ Feature requests are welcome! Please [open an issue](https://github.com/alexhart
 git clone https://github.com/alexhartm/tonie-podcast-sync.git
 cd tonie-podcast-sync
 
-# Install with development dependencies
-pip install -e ".[dev]"
+# Install project tooling and locked development dependencies
+mise install python uv
+mise run install
 
 # Install pre-commit hooks (optional but recommended)
-pre-commit install
+mise run setup
 ```
+
+`mise.toml` selects the development runtime and uv. `uv.lock` selects exact Python
+package versions, including Ruff and pre-commit; `pyproject.toml` declares direct
+dependencies and required compatibility/security minimums. CI and local hooks
+reuse the same mise tasks. The unit-test workflow separately checks the minimum
+supported Python branch. Generic upstream pre-commit hooks retain their own
+repository revisions because uv does not manage those environments.
 
 ### Running Tests
 
 ```bash
 # Run all tests
-pytest
+mise run test
 
 # Run with coverage
-pytest --cov=tonie_podcast_sync
+mise exec -- uv run --locked --all-extras pytest --cov=tonie_podcast_sync
 
 # Run specific test file
-pytest tests/test_specific.py
+mise exec -- uv run --locked --all-extras pytest tests/test_specific.py
 ```
 
 ### Code Style
@@ -105,13 +114,13 @@ This project uses [Ruff](https://github.com/astral-sh/ruff) for linting and form
 
 ```bash
 # Check code style
-ruff check .
+mise run lint
 
 # Auto-fix issues
-ruff check --fix .
+mise exec -- uv run --locked --all-extras ruff check --fix .
 
 # Format code
-ruff format .
+mise exec -- uv run --locked --all-extras ruff format .
 ```
 
 ## Code Review Process

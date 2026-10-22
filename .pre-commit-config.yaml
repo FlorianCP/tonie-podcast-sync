@@ -5,20 +5,23 @@ repos:
       - id: check-yaml
       - id: end-of-file-fixer
       - id: trailing-whitespace
-  - repo: https://github.com/astral-sh/uv-pre-commit
-    # uv version.
-    rev: 0.7.4
-    hooks:
-      - id: uv-lock
   - repo: local
     hooks:
+      - id: uv-lock
+        name: Check uv.lock
+        entry: mise exec -- uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
       - id: ruff format
         name: ruff format
-        entry: ruff format --check --diff
+        entry: mise run format
         language: system
         types: [python]
+        pass_filenames: false
       - id: ruff check
         name: ruff check
-        entry: ruff check .
+        entry: mise run lint
         language: system
         types: [python]
+        pass_filenames: false

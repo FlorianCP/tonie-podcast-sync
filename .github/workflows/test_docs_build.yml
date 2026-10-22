@@ -14,14 +14,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Install dependencies (includes docs)
-        run: uv sync --locked --all-extras --dev
+      - name: Install project tools
+        uses: jdx/mise-action@v3
+        with:
+          install_args: python uv
 
       - name: Test MkDocs build
-        run: uv run mkdocs build --strict
+        run: mise run docs-build
 
       - name: Verify Mike installation
-        run: uv run mike --version
+        run: uv run --no-sync mike --version

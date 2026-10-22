@@ -9,6 +9,9 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    env:
+      # Test the minimum supported branch independently of the development runtime.
+      UV_PYTHON: "3.10.22"
 
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +24,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             ffmpeg
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-      - name: Install dependencies
-        run: uv sync --locked --all-extras --dev
+      - name: Install project tools
+        uses: jdx/mise-action@v3
+        with:
+          install_args: python uv
       - name: Run unit tests
-        run: uv run pytest tests/
+        run: mise run test

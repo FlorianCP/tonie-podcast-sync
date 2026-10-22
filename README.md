@@ -14,7 +14,7 @@ This is a purely private project and has no association with Boxine GmbH.
 
 # Prerequisites
 
-- requires Python >= 3.10.11
+- requires Python >= 3.10; development tooling is selected in `mise.toml`, with pip >= 26.2.2 when using pip
 - if you use the `volume_adjustment` feature for a Podcast, `ffmpeg` needs to be installed
 
 # Usage
