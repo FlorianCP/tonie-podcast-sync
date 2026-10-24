@@ -83,9 +83,7 @@ def test_sync_files_dry_run_uses_manual_list_order_and_warns_about_time_limit(
     assert "time limit" in captured.out
 
 
-def test_sync_files_from_directory_uses_alphabetical_order_and_respects_wipe_false(
-    mock_tonie_api_with_tonie, tmp_path
-):
+def test_sync_files_from_directory_uses_alphabetical_order_and_respects_wipe_false(mock_tonie_api_with_tonie, tmp_path):
     c_file = _write_fake_mp3(tmp_path / "c-file.mp3")
     a_file = _write_fake_mp3(tmp_path / "a-file.mp3")
     b_file = _write_fake_mp3(tmp_path / "b-file.mp3")
@@ -124,15 +122,9 @@ def test_sync_files_allows_sort_override_for_explicit_file_list(mock_tonie_api_w
     assert upload_titles == ["A", "B"]
 
 
-def test_extract_local_audio_title_prefers_id3_title_and_falls_back_to_filename(
-    mock_tonie_api_with_tonie, tmp_path
-):
+def test_extract_local_audio_title_prefers_id3_title_and_falls_back_to_filename(mock_tonie_api_with_tonie, tmp_path):
     titled_file = tmp_path / "fallback-name.mp3"
-    titled_file.write_bytes(
-        b"ID3\x03\x00\x00\x00\x00\x00\x17"
-        b"TIT2\x00\x00\x00\x0d\x00\x00\x03Tagged Title"
-        b"audio"
-    )
+    titled_file.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x17TIT2\x00\x00\x00\x0d\x00\x00\x03Tagged Titleaudio")
 
     untitled_file = _write_fake_mp3(tmp_path / "plain-filename.mp3")
 

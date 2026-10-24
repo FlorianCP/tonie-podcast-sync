@@ -131,9 +131,7 @@ def _create_tonie_podcast_sync() -> ToniePodcastSync | None:
         return None
 
 
-def _sync_tonie_from_config(
-    tps: ToniePodcastSync, tonie_id: str, tonie_config: object
-) -> None:
+def _sync_tonie_from_config(tps: ToniePodcastSync, tonie_id: str, tonie_config: object) -> None:
     """Sync one configured Tonie from the settings file.
 
     Args:
@@ -186,9 +184,7 @@ def _sync_tonie_from_config(
     raise ValueError(msg)
 
 
-def _get_config_value(
-    config: object, key: str, default: object = None
-) -> object:
+def _get_config_value(config: object, key: str, default: object = None) -> object:
     """Read a config value with `.get()` first and attribute fallback.
 
     Args:
