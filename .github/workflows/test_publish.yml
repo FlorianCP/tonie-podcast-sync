@@ -7,11 +7,14 @@ jobs:
   publish-service-client-package:
     runs-on: ubuntu-latest
     steps:
-      - name: Publish PyPi package (Test PyPI)
-        uses: code-specialist/pypi-poetry-publish@v1
+      - uses: actions/checkout@v4
+      - name: Install project tools
+        uses: jdx/mise-action@v3
         with:
-          PACKAGE_DIRECTORY: "./"
-          PYTHON_VERSION: "3.11"
-          ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUBLISH_REGISTRY_PASSWORD: ${{ secrets.TEST_PYPI_TOKEN }}
-          PUBLISH_REGISTRY: "https://test.pypi.org/legacy/"
+          install_args: python uv
+      - name: Build package
+        run: mise run build
+      - name: Publish package (Test PyPI)
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.TEST_PYPI_TOKEN }}
+        run: uv publish --publish-url https://test.pypi.org/legacy/

@@ -138,6 +138,7 @@ mise.local.toml
 *.code-workspace
 /test*.py
 todo.md
+tasks/
 !.pre-commit-config.yaml
 
 # node stuff
