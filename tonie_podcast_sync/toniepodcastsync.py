@@ -191,6 +191,11 @@ class ToniePodcastSync:
         if not self._validate_tonie_exists(tonie_id):
             return []
 
+        source_error = self._find_local_audio_source_error(files=files, directory=directory)
+        if source_error:
+            self._report_unchanged_tonie(tonie_id, source_error)
+            return []
+
         local_files = self._scan_local_audio_files(
             files=files,
             directory=directory,
@@ -199,19 +204,35 @@ class ToniePodcastSync:
             min_duration_sec=episode_min_duration_sec,
             max_duration_sec=episode_max_duration_sec,
         )
-        selected_files, skipped_files = self._select_local_audio_files_within_time_limit(local_files, max_minutes)
+        max_seconds, max_chapters = self._local_audio_capacity(tonie_id, max_minutes, wipe=wipe)
+        selected_files, skipped_files = self._select_local_audio_files_within_time_limit(
+            local_files,
+            max_minutes,
+            max_seconds=max_seconds,
+            max_chapters=max_chapters,
+        )
         self._report_skipped_local_audio_files(skipped_files, max_minutes)
 
         if dry_run:
             self._print_local_audio_dry_run(selected_files, tonie_id, max_minutes)
             return selected_files
 
-        if wipe:
-            self._wipe_tonie(tonie_id)
+        if not selected_files:
+            self._report_unchanged_tonie(tonie_id, "no local audio files fit the configured limits")
+            return []
 
-        prepared_files = self._prepare_local_audio_files_for_upload(selected_files)
-        self._upload_episodes_to_tonie("Local audio files", prepared_files, tonie_id)
-        return prepared_files
+        with tempfile.TemporaryDirectory(prefix="tonie-local-audio-") as tmpdir:
+            # Prepare every upload artifact before any destructive cloud change.
+            prepared_files = self._prepare_local_audio_files_for_upload(selected_files, Path(tmpdir))
+            if wipe:
+                self._wipe_tonie(tonie_id)
+            existing_chapters = [chapter.title for chapter in self._tonies[tonie_id].chapters]
+            return self._upload_episodes_to_tonie(
+                "Local audio files",
+                prepared_files,
+                tonie_id,
+                verify_chapters_after=existing_chapters,
+            )
 
     def _validate_tonie_exists(self, tonie_id: str) -> bool:
         """Check if a Tonie with the given ID exists.
@@ -284,13 +305,21 @@ class ToniePodcastSync:
         source_title: str,
         episodes: list[Episode],
         tonie_id: str,
-    ) -> None:
+        *,
+        verify_chapters_after: list[str] | None = None,
+    ) -> list[Episode]:
         """Upload a list of episodes to a Tonie.
 
         Args:
             source_title: The source title for progress reporting
             episodes: List of episodes to upload
             tonie_id: The ID of the target Tonie
+            verify_chapters_after: Chapter titles present before the upload. When given, the
+                Tonie is re-read afterwards and only episodes whose chapter actually appeared
+                are counted as uploaded, because tonie-api does not raise on rejected chapters.
+
+        Returns:
+            The episodes that were uploaded successfully.
         """
         successfully_uploaded = []
         failed_episodes = []
@@ -307,7 +336,44 @@ class ToniePodcastSync:
             else:
                 failed_episodes.append(episode)
 
+        if verify_chapters_after is not None and successfully_uploaded:
+            successfully_uploaded, missing_episodes = self._verify_uploaded_chapters(
+                tonie_id, successfully_uploaded, verify_chapters_after
+            )
+            failed_episodes.extend(missing_episodes)
+
         self._report_upload_results(source_title, tonie_id, successfully_uploaded, failed_episodes)
+        return successfully_uploaded
+
+    def _verify_uploaded_chapters(
+        self,
+        tonie_id: str,
+        episodes: list[Episode],
+        previous_chapters: list[str],
+    ) -> tuple[list[Episode], list[Episode]]:
+        """Split uploaded episodes by whether their chapter is present on the refreshed Tonie.
+
+        Args:
+            tonie_id: The ID of the target Tonie
+            episodes: Episodes whose upload request did not raise
+            previous_chapters: Chapter titles present before the upload started
+
+        Returns:
+            A tuple of `(confirmed_episodes, missing_episodes)`.
+        """
+        self._update_tonies()
+        new_titles = [chapter.title for chapter in self._tonies[tonie_id].chapters][len(previous_chapters) :]
+        confirmed, missing = [], []
+        for episode in episodes:
+            title = self._generate_chapter_title(episode)
+            match = next((t for t in new_titles if compare_unicode_caseless(t, title)), None)
+            if match is None:
+                missing.append(episode)
+                log.error("Chapter '%s' is missing on the Tonie after upload", title)
+            else:
+                new_titles.remove(match)
+                confirmed.append(episode)
+        return confirmed, missing
 
     def _report_upload_results(
         self,
@@ -700,9 +766,66 @@ class ToniePodcastSync:
             raise ValueError(msg)
 
         if directory is not None:
-            return sorted(Path(directory).glob("*.mp3"), key=lambda path: path.name.lower())
+            return sorted(
+                (path for path in Path(directory).iterdir() if path.is_file() and path.suffix.lower() == ".mp3"),
+                key=lambda path: path.name.lower(),
+            )
 
         return [Path(path) for path in files or []]
+
+    def _find_local_audio_source_error(
+        self,
+        *,
+        files: list[str | Path] | None = None,
+        directory: str | Path | None = None,
+    ) -> str | None:
+        """Check that the requested local audio source exists before any Tonie change.
+
+        Args:
+            files: Explicit list of MP3 file paths.
+            directory: Folder containing `.mp3` files.
+
+        Returns:
+            A human-readable error, or `None` when the source can be scanned.
+        """
+        if directory is not None and files is None:
+            if not Path(directory).is_dir():
+                return f"audio folder '{directory}' does not exist"
+            return None
+        missing = [str(path) for path in files or [] if not Path(path).is_file()]
+        if missing:
+            return f"local audio file(s) not found: {', '.join(missing)}"
+        return None
+
+    def _report_unchanged_tonie(self, tonie_id: str, reason: str) -> None:
+        """Warn that a local audio sync was skipped without modifying the Tonie.
+
+        Args:
+            tonie_id: The ID of the Tonie that stays unchanged.
+            reason: Why nothing was uploaded.
+        """
+        msg = f"Nothing to upload to {self._tonies[tonie_id].name} ({tonie_id}): {reason}. Tonie left unchanged."
+        log.warning(msg)
+        console.print(f"WARNING: {msg}", style="yellow")
+
+    def _local_audio_capacity(self, tonie_id: str, max_minutes: int, *, wipe: bool) -> tuple[int, int | None]:
+        """Return the playback seconds and chapter count available for a local audio sync.
+
+        Args:
+            tonie_id: The ID of the target Tonie.
+            max_minutes: Requested maximum playback time in minutes.
+            wipe: Whether existing chapters will be removed first.
+
+        Returns:
+            A tuple of `(max_seconds, max_chapters)`; `max_chapters` is `None` when unlimited.
+        """
+        if max_minutes <= 0 or max_minutes > MAXIMUM_TONIE_MINUTES:
+            max_minutes = MAXIMUM_TONIE_MINUTES
+        max_seconds = max_minutes * 60
+        if wipe:
+            return max_seconds, None
+        tonie = self._tonies[tonie_id]
+        return min(max_seconds, int(tonie.secondsRemaining)), tonie.chaptersRemaining
 
     def _sort_local_audio_files(
         self,
@@ -890,11 +1013,12 @@ class ToniePodcastSync:
         audio = AudioSegment.from_file(filepath, format="mp3")
         return math.ceil(audio.duration_seconds)
 
-    def _prepare_local_audio_files_for_upload(self, episodes: list[Episode]) -> list[Episode]:
+    def _prepare_local_audio_files_for_upload(self, episodes: list[Episode], workdir: Path) -> list[Episode]:
         """Prepare local audio files for upload, including optional volume adjustment.
 
         Args:
             episodes: Local audio episodes selected for upload.
+            workdir: Directory for temporary adjusted copies. The caller owns its cleanup.
 
         Returns:
             Episode objects whose `fpath` values point at upload-ready MP3 files. Files are
@@ -914,16 +1038,17 @@ class ToniePodcastSync:
                 url=episode.url,
                 volume_adjustment=volume_adjustment,
             )
-            adjusted_episode.fpath = self._create_adjusted_local_audio_copy(episode)
+            adjusted_episode.fpath = self._create_adjusted_local_audio_copy(episode, workdir)
             prepared_episodes.append(adjusted_episode)
 
         return prepared_episodes
 
-    def _create_adjusted_local_audio_copy(self, episode: Episode) -> Path:
+    def _create_adjusted_local_audio_copy(self, episode: Episode, workdir: Path) -> Path:
         """Create a temporary MP3 file with the requested volume adjustment.
 
         Args:
             episode: Local audio episode whose source file should be adjusted.
+            workdir: Directory that receives the adjusted copy.
 
         Returns:
             Path to a temporary `.mp3` file ready for upload.
@@ -931,36 +1056,43 @@ class ToniePodcastSync:
         with episode.fpath.open("rb") as file:
             adjusted_content = self._process_audio_content(file.read(), episode.volume_adjustment)
 
-        tmpdir = Path(tempfile.mkdtemp(prefix="tonie-local-audio-"))
-        adjusted_path = tmpdir / sanitize_filename(episode.fpath.name)
-        with adjusted_path.open("wb") as file:
-            file.write(adjusted_content)
+        adjusted_path = Path(tempfile.mkdtemp(dir=workdir)) / sanitize_filename(episode.fpath.name)
+        adjusted_path.write_bytes(adjusted_content)
         return adjusted_path
 
     def _select_local_audio_files_within_time_limit(
-        self, episodes: list[Episode], max_minutes: int
+        self,
+        episodes: list[Episode],
+        max_minutes: int,
+        *,
+        max_seconds: int | None = None,
+        max_chapters: int | None = None,
     ) -> tuple[list[Episode], list[Episode]]:
-        """Select local files that fit within the configured time limit.
+        """Select local files that fit within the configured time and chapter limits.
 
         Args:
             episodes: Candidate local audio episodes in their final upload order.
             max_minutes: Maximum combined playback time in minutes. Values <= 0 or above
                 `MAXIMUM_TONIE_MINUTES` fall back to `MAXIMUM_TONIE_MINUTES`.
+            max_seconds: Optional tighter playback budget in seconds, e.g. the remaining
+                capacity of a Tonie that is not wiped first.
+            max_chapters: Optional maximum number of files, e.g. the remaining chapter slots.
 
         Returns:
             A tuple of `(selected_files, skipped_files)` where the first list fits within the
-            time limit and the second contains files excluded because they would exceed it.
+            limits and the second contains files excluded because they would exceed them.
         """
         if max_minutes <= 0 or max_minutes > MAXIMUM_TONIE_MINUTES:
             max_minutes = MAXIMUM_TONIE_MINUTES
+        budget = max_minutes * 60 if max_seconds is None else min(max_seconds, max_minutes * 60)
 
         selected_files = []
         skipped_files = []
         total_seconds = 0
-        max_seconds = max_minutes * 60
 
         for episode in episodes:
-            if episode.duration_sec > max_seconds or (total_seconds + episode.duration_sec) > max_seconds:
+            chapters_full = max_chapters is not None and len(selected_files) >= max_chapters
+            if chapters_full or (total_seconds + episode.duration_sec) > budget:
                 skipped_files.append(episode)
                 continue
             total_seconds += episode.duration_sec
@@ -981,7 +1113,7 @@ class ToniePodcastSync:
         skipped_titles = ", ".join(episode.title for episode in skipped_files)
         console.print(
             f"Warning: skipped {len(skipped_files)} local file(s) due to time limit of "
-            f"{max_minutes} minutes: {skipped_titles}",
+            f"{max_minutes} minutes or remaining Tonie capacity: {skipped_titles}",
             style="yellow",
         )
 

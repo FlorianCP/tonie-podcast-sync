@@ -195,19 +195,16 @@ def _get_config_value(config: object, key: str, default: object = None) -> objec
     Returns:
         The configured value, or `default` when neither lookup style yields a value.
     """
+    if isinstance(config, dict):
+        return config.get(key, default)
+
     if hasattr(config, "get"):
         value = config.get(key, default=default)
         if value is not default:
             return value
 
     config_vars = vars(config) if hasattr(config, "__dict__") else {}
-    if key in config_vars:
-        return config_vars[key]
-
-    if isinstance(config, dict):
-        return config.get(key, default)
-
-    return default
+    return config_vars.get(key, default)
 
 
 def _normalize_audio_files_setting(audio_files: str | list[str] | None) -> list[str]:
